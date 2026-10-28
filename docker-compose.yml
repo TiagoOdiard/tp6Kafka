@@ -1,0 +1,221 @@
+name: activation-poc
+
+# Variables comunes a todos los microservicios.
+x-app-environment: &app-environment
+  KAFKA_BROKERS: kafka:9092
+  KAFKAJS_NO_PARTITIONER_WARNING: '1'
+
+services:
+  # ---------------------------------------------------------------
+  # Infraestructura
+  # ---------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # INTERNAL: lo usan los contenedores. EXTERNAL: lo usa el host en localhost:9092.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+    ports:
+      - "9092:29092"
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1',
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./docker/create-topics.sh:/tmp/create-topics.sh:ro
+    entrypoint: ['/bin/bash', '/tmp/create-topics.sh']
+    restart: 'no'
+
+  kafka-ui:
+    # Digest fijo para que la demo sea reproducible (evita que "latest" cambie).
+    image: kafbat/kafka-ui@sha256:94d791db3a143a622b9d7311f85f1f7a80ffb72999780c2de566060039d18cdc
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7.0
+    # Replica set de un nodo: necesario para transacciones / outbox (fase 4).
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - mongo_data:/data/db
+
+  mongo-init:
+    image: mongo:7.0
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ./docker/mongo-init.sh:/tmp/mongo-init.sh:ro
+    entrypoint: ['/bin/bash', '/tmp/mongo-init.sh']
+    restart: 'no'
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "8025:8025" # UI web
+      - "1025:1025" # SMTP
+
+  # ---------------------------------------------------------------
+  # Microservicios NestJS
+  # ---------------------------------------------------------------
+  activation-api:
+    build:
+      context: .
+      dockerfile: apps/activation-api/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: activation-api
+      KAFKA_GROUP_ID: activation-api-group
+      MONGO_URI: mongodb://mongo:27017/activation_db?replicaSet=rs0
+    ports:
+      - "3000:3000"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: apps/billing-service/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: billing-service
+      KAFKA_GROUP_ID: billing-service-group
+      MONGO_URI: mongodb://mongo:27017/billing_db?replicaSet=rs0
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  provisioning-service:
+    build:
+      context: .
+      dockerfile: apps/provisioning-service/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: provisioning-service
+      KAFKA_GROUP_ID: provisioning-service-group
+      MONGO_URI: mongodb://mongo:27017/provisioning_db?replicaSet=rs0
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: apps/notification-service/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: notification-service
+      KAFKA_GROUP_ID: notification-service-group
+      MONGO_URI: mongodb://mongo:27017/notification_db?replicaSet=rs0
+      MAILHOG_HOST: mailhog
+      MAILHOG_PORT: 1025
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+      mailhog:
+        condition: service_started
+    restart: unless-stopped
+
+  crm-analytics-service:
+    build:
+      context: .
+      dockerfile: apps/crm-analytics-service/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: crm-analytics-service
+      KAFKA_GROUP_ID: crm-analytics-group
+      KAFKA_FROM_BEGINNING: 'true'
+      MONGO_URI: mongodb://mongo:27017/crm_db?replicaSet=rs0
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Escenario 5: perfil opcional, se levanta a demanda.
+  loyalty-service:
+    profiles: ['loyalty']
+    build:
+      context: .
+      dockerfile: apps/loyalty-service/Dockerfile
+    environment:
+      <<: *app-environment
+      KAFKA_CLIENT_ID: loyalty-service
+      KAFKA_GROUP_ID: loyalty-service-group
+      MONGO_URI: mongodb://mongo:27017/loyalty_db?replicaSet=rs0
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
+  # Frontend
+  # ---------------------------------------------------------------
+  demo-ui:
+    build:
+      context: .
+      dockerfile: apps/demo-ui/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - activation-api
+
+volumes:
+  kafka_data:
+  mongo_data:

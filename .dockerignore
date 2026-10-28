@@ -1,0 +1,15 @@
+# Dependencias y artefactos de build
+node_modules
+**/node_modules
+**/dist
+
+# Repositorio y documentación
+.git
+.gitignore
+docs
+*.pdf
+README.md
+
+# Entorno local
+.env
+.env.*

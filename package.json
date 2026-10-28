@@ -1,0 +1,20 @@
+{
+  "name": "activation-poc-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "POC de Activación de Servicios con Kafka - Sistemas Distribuidos 2026",
+  "workspaces": [
+    "libs/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @poc/contracts && npm run build -w @poc/kafka-toolkit && npm run build -w @poc/activation-api && npm run build -w @poc/billing-service && npm run build -w @poc/provisioning-service && npm run build -w @poc/notification-service && npm run build -w @poc/crm-analytics-service && npm run build -w @poc/loyalty-service && npm run build -w @poc/demo-ui",
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down",
+    "docker:reset": "docker compose --profile loyalty down -v",
+    "docker:logs": "docker compose logs -f"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

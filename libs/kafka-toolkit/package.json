@@ -1,0 +1,17 @@
+{
+  "name": "@poc/kafka-toolkit",
+  "version": "1.0.0",
+  "description": "Utilidades para Idempotencia, Reintentos, DLQ y Sobre de Mensajes",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@poc/contracts": "*",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
